@@ -7,18 +7,41 @@
 
 ## Part 1 — How to Test
 
-### 1.1 Manual testing with raw tools
+### 1.1 Direct TCP protocol test
 
-Talk to the server directly before the client exists:
+SCP/1.0 có prefix nhị phân 4 byte nên không thể gõ JSON trực tiếp bằng `nc`/`telnet`. Dùng một script TCP nhỏ để
+kiểm tra server mà không đi qua web gateway:
 
-```bash
-nc localhost 5000            # TCP
-nc -u localhost 5000         # UDP
-# then type a message in your protocol, e.g.:
-{"command": "PING", "requestId": "1", "payload": {}}
+```python
+import json, socket, struct
+
+def send_frame(sock, message):
+    body = json.dumps(message, ensure_ascii=False).encode("utf-8")
+    sock.sendall(struct.pack(">I", len(body)) + body)
+
+def recv_exact(sock, size):
+    chunks = []
+    remaining = size
+    while remaining:
+        chunk = sock.recv(remaining)
+        if not chunk:
+            raise EOFError("connection closed during frame")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+def recv_frame(sock):
+    size = struct.unpack(">I", recv_exact(sock, 4))[0]
+    return json.loads(recv_exact(sock, size).decode("utf-8"))
+
+with socket.create_connection(("localhost", 5000), timeout=5) as sock:
+    send_frame(sock, {
+        "type": "HELLO",
+        "requestId": "manual-1",
+        "payload": {"protocolVersion": "SCP/1.0", "clientName": "manual-test"}
+    })
+    print(recv_frame(sock))
 ```
-
-`telnet localhost 5000` also works for TCP text protocols.
 
 ### 1.2 Concurrency / load test
 
@@ -26,20 +49,38 @@ Prove the server serves many clients at once. Example script (adapt the message 
 
 ```python
 # tests/load_test.py — run on the host while the server is up
-import os, socket, threading, time
+import json, os, socket, struct, threading, time
 
 HOST = os.getenv("CLIENT_TARGET_HOST", "localhost")
 PORT = int(os.getenv("CLIENT_TARGET_PORT", "5000"))
 N = int(os.getenv("N_CLIENTS", "50"))
 results = []
 
+def recv_exact(sock, size):
+    chunks = []
+    remaining = size
+    while remaining:
+        chunk = sock.recv(remaining)
+        if not chunk:
+            raise EOFError("connection closed during frame")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
 def client(i):
     start = time.time()
     try:
         with socket.create_connection((HOST, PORT), timeout=5) as s:
-            s.sendall(b'{"command": "PING", "requestId": "%d", "payload": {}}\n' % i)
-            data = s.recv(4096)          # a real client must loop until a full frame arrives
-            results.append((i, True, time.time() - start, data[:60]))
+            message = {
+                "type": "HELLO",
+                "requestId": f"load-{i}",
+                "payload": {"protocolVersion": "SCP/1.0", "clientName": "load-test"}
+            }
+            body = json.dumps(message).encode("utf-8")
+            s.sendall(struct.pack(">I", len(body)) + body)
+            size = struct.unpack(">I", recv_exact(s, 4))[0]
+            response = recv_exact(s, size)
+            results.append((i, True, time.time() - start, response[:60]))
             time.sleep(2)                # hold the connection open to overlap with others
     except Exception as e:
         results.append((i, False, time.time() - start, str(e)))
@@ -51,7 +92,8 @@ ok = [r for r in results if r[1]]
 print(f"{len(ok)}/{N} succeeded, max latency {max(r[2] for r in ok) if ok else 0:.3f}s")
 ```
 
-If the server were iterative, total time would grow with N; with real concurrency all clients are served in parallel.
+Script này mới kiểm tra nhiều TCP connection cùng handshake. Test tải đầy đủ phải tạo account test riêng, đăng nhập
+và giữ các connection đồng thời; không dùng chung một username vì SCP/1.0 chỉ cho một phiên online/account.
 
 ### 1.3 Abnormal disconnects
 
@@ -59,8 +101,11 @@ If the server were iterative, total time would grow with N; with real concurrenc
 |----------|-----|----------|
 | Client killed | `Ctrl+C`, `kill -9 <pid>`, or `docker kill <container>` | Server detects EOF/reset, cleans up the session, keeps serving others |
 | Client goes silent | connect and send nothing | Server times out the connection (if your protocol defines it) |
-| Garbage input | `head -c 100000 /dev/urandom \| nc localhost 5000` | Server rejects / closes that connection, does not crash or run out of memory |
+| Oversized prefix | Send `struct.pack(">I", 65537)` | Server returns 413 if possible, closes only that connection and does not allocate the declared body |
+| Malformed JSON | Send a valid length prefix followed by invalid JSON three times | Server returns 400, then closes after the third strike |
+| Split frame | Send prefix/body one byte at a time | Server reassembles exactly one request and responds once |
 | Server stops | `docker compose stop server` | Client shows a clear error; optionally retries with backoff |
+| Browser closes | Close tab or kill client/gateway container | Gateway closes TCP; server removes authenticated session and broadcasts `USER_LEFT` |
 
 ### 1.4 Simulating a bad network
 
@@ -79,10 +124,13 @@ tc qdisc del dev eth0 root                           # restore
 
 | # | Test | Method | Result (paste output / screenshot link) | Pass? |
 |:-:|------|--------|------------------------------------------|:-----:|
-| 1 | N concurrent clients | `tests/load_test.py`, N = | | |
-| 2 | Client killed mid-session | | | |
-| 3 | Malformed / oversized message | | | |
-| 4 | Feature: *(name)* | | | |
-| 5 | Feature: *(name)* | | | |
+| 1 | N concurrent TCP clients | `tests/load_test.py`, N = | | |
+| 2 | Register then login | Direct protocol/integration test | | |
+| 3 | Duplicate register and simultaneous duplicate login | Server concurrency test | | |
+| 4 | Two users chat in general channel | Browser E2E + protocol assertions | | |
+| 5 | Client killed mid-session | Kill gateway/browser connection | | |
+| 6 | Split/coalesced frames | Protocol codec/socket tests | | |
+| 7 | Malformed/oversized frame | Protocol robustness tests | | |
+| 8 | Pool saturation and recovery | Connect over configured max | | |
 
 *(Add notes on bugs found by these tests and how you fixed them.)*

@@ -1,8 +1,8 @@
-# Project Name
+# TCP Web Chat
 
 > **Course:** Network Programming (INT1433) · PTIT · Instructor: Dr. Hung N. Dang
 >
-> *One-sentence pitch: what your system does and for whom.*
+> Web chat tự triển khai cho nhóm nhỏ, có đăng ký/đăng nhập và chat tổng thời gian thực qua giao thức TCP tự thiết kế.
 
 👋 **New here? Read first:** [`docs/student-guide.md`](docs/student-guide.md) · 📜 Brief & grading: [`INSTRUCTION.md`](INSTRUCTION.md) · 🚀 Workflow: [`GETTING_STARTED.md`](GETTING_STARTED.md)
 
@@ -10,24 +10,26 @@
 
 ---
 
-## 1. Team (mandatory)
+## 1. Thông tin nhóm (Team) — Bắt buộc
 
-| # | Full name | Student ID | Class | GitHub | Role |
-|:-:|-----------|:----------:|:-----:|--------|------|
-| 1 | | | | @ | |
-| 2 | | | | @ | |
-| 3 | | | | @ | |
+**Tên nhóm:** Nhóm 001
 
-**Topic:** *(e.g., Multi-room chat over TCP)*
+| **STT** | **Họ và tên** | **Mã sinh viên** | **Lớp** | **GitHub** | **Vai trò** |
+|:-------:|---------------|------------------|---------|------------|-------------|
+| 1 | Nguyễn Đức Hải | | Nhóm 05 | | Developer |
+| 2 | Ngô Hoàng Minh | B23DCCN553 | Nhóm 05 | [@HuangMingo](https://github.com/HuangMingo) | Developer |
+| 3 | Quách Thành Đạt | | Nhóm 05 | | Developer |
+
+**Topic:** Web chat có tài khoản và kênh chat tổng sử dụng Java TCP Socket
 
 ---
 
 ## 2. Problem & Idea (mandatory)
 
-- **Problem:** *(What problem are you solving? Who has it?)*
-- **Our idea:** *(Your solution in 2–3 sentences.)*
-- **What makes it non-trivial:** *(The networking challenge — e.g., resuming transfers, real-time sync, fairness under load.)*
-- **Out of scope:** *(What you deliberately do not build.)*
+- **Problem:** Nhóm học tập/làm việc nhỏ cần một kênh chat tức thời có thể tự triển khai và không phụ thuộc dịch vụ bên thứ ba.
+- **Our idea:** Người dùng đăng ký, đăng nhập trên giao diện web và trò chuyện trong một kênh chung. Web gateway ánh xạ mỗi browser sang một TCP socket tới Java server.
+- **What makes it non-trivial:** Tự xử lý framing trên TCP, xác thực phiên, broadcast đồng thời và dọn trạng thái đúng khi kết nối bị ngắt.
+- **Out of scope:** Nhiều phòng, nhắn riêng, file/thoại/video, OAuth, khôi phục mật khẩu qua email và hệ thống phân tán.
 
 Full proposal: [`docs/proposal.md`](docs/proposal.md)
 
@@ -35,12 +37,13 @@ Full proposal: [`docs/proposal.md`](docs/proposal.md)
 
 ## 3. Features
 
-- [ ] **Connection & session:** *(handshake, authentication, ...)*
+- [ ] **Account:** đăng ký và đăng nhập; mật khẩu chỉ lưu dạng hash có salt
+- [ ] **Connection & session:** handshake phiên bản, một tài khoản/một phiên online, logout/quit
 - [ ] **Custom protocol:** specified in [`docs/protocol-design.md`](docs/protocol-design.md)
 - [ ] **Concurrency:** many clients at once, thread-safe shared state
 - [ ] **Robustness:** abrupt disconnects, malformed messages, timeouts
-- [ ] **Feature A:** *(short description)*
-- [ ] **Feature B:** *(short description)*
+- [ ] **General chat:** broadcast tin nhắn thời gian thực tới người dùng đã đăng nhập
+- [ ] **Presence:** xem danh sách online và nhận sự kiện người dùng vào/rời
 
 ---
 
@@ -48,25 +51,31 @@ Full proposal: [`docs/proposal.md`](docs/proposal.md)
 
 ```mermaid
 graph LR
-    subgraph Clients
-        C1["Client 1 (CLI / GUI)"]
-        C2["Client 2 (CLI / GUI)"]
+    subgraph Browsers
+        B1["Browser A"]
+        B2["Browser B"]
+    end
+    subgraph Client Container
+        G["Web UI + gateway<br/>WebSocket ↔ TCP"]
     end
     subgraph Server Container
-        S["Server (port 5000)<br/>concurrency model: ..."]
-        ST[("State / Storage")]
-        S --- ST
+        S["Java TCP server<br/>port 5000 · fixed thread pool"]
+        A[("Accounts")]
+        O[("Online sessions")]
+        S --- A
+        S --- O
     end
-    C1 -->|protocol messages over TCP/UDP| S
-    C2 -->|protocol messages over TCP/UDP| S
+    B1 -->|WebSocket| G
+    B2 -->|WebSocket| G
+    G -->|SCP/1.0: 4-byte length + JSON| S
 ```
 
 | Aspect | Our choice | Why (one line) |
 |--------|-----------|----------------|
-| Language | | |
-| Transport | TCP / UDP | |
-| Framing | delimiter / length-prefix / fixed | |
-| Concurrency model | thread-per-client / thread pool / event loop | |
+| Language | Java server; web client/gateway | Java phù hợp phần socket; browser cung cấp UI thuận tiện |
+| Transport | TCP | Tin cậy, đúng thứ tự và phù hợp chat văn bản |
+| Framing | 4-byte big-endian length + UTF-8 JSON | Xử lý đúng TCP split/coalescing và giới hạn cấp phát |
+| Concurrency model | Fixed thread pool | Giới hạn tài nguyên và dễ kiểm thử/giải thích |
 
 Details: [`docs/architecture.md`](docs/architecture.md)
 
@@ -74,14 +83,18 @@ Details: [`docs/architecture.md`](docs/architecture.md)
 
 ## 5. Quick Start
 
+Target M2/M3 workflow after the Java server and web client images are implemented:
+
 ```bash
 cp .env.example .env          # or: make init
-docker compose up --build -d  # start the server   (or: make up)
-docker compose run --rm client  # start a client — repeat in more terminals (or: make client)
-docker compose down           # stop everything    (or: make down)
+docker compose up --build -d  # build and start server + web client
+docker compose logs -f server client
+docker compose down
 ```
 
-*(Add any extra steps, e.g., running a GUI client natively.)*
+Open `http://localhost:8080` in two browser windows to test concurrent users. The current starter Dockerfiles are
+placeholders until the M2 implementation is added; do not record a successful run until this command is actually
+verified from a clean clone.
 
 ---
 
@@ -100,6 +113,7 @@ Put images in `docs/asset/`. Full results: [`docs/testing-guide.md`](docs/testin
 | [`docs/protocol-design.md`](docs/protocol-design.md) | Application-layer protocol specification |
 | [`docs/architecture.md`](docs/architecture.md) | Concurrency model, components, connection lifecycle |
 | [`docs/testing-guide.md`](docs/testing-guide.md) | Test methods and our test evidence |
+| [`docs/module-ownership.md`](docs/module-ownership.md) | Planned module ownership and oral-defense map |
 | [`docs/ai-log.md`](docs/ai-log.md) | AI usage log |
 
 ---
