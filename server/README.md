@@ -9,5 +9,8 @@ The server application should:
 3. Handle multiple connections concurrently (via threads, processes, or async I/O).
 4. Parse and respond to client messages according to the protocol defined in `docs/protocol-design.md`.
 
+The server also connects to PostgreSQL, creates the `users` and `messages` schema idempotently, hashes passwords
+with SHA-256 as required, and persists chat history.
+
 ## Docker Usage
 Code runs inside a Docker container. Configure `Dockerfile` in this directory to install your runtime/compiler and build/run your code.

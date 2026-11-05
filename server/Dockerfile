@@ -1,29 +1,14 @@
-# ============================================================
-# Server Dockerfile — Network Programming Assignment
-# ============================================================
-# Replace this template with your actual build instructions.
-# Examples for common languages are in GETTING_STARTED.md
-# ============================================================
+FROM maven:3.9.9-eclipse-temurin-21-alpine AS build
+WORKDIR /build
+COPY pom.xml .
+RUN mvn -q -DskipTests dependency:go-offline
+COPY src ./src
+RUN mvn -q test package
 
-FROM ubuntu:22.04
-
+FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
-
-# TODO: Install dependencies for your chosen language
-# Java:   apt-get install -y default-jdk
-# Python: apt-get install -y python3
-# C:      apt-get install -y gcc
-
-COPY src/ ./src/
-
-# TODO: Build step (if needed)
-# Java:   javac src/*.java
-# C:      gcc -o server src/server.c -lpthread
-
+RUN addgroup -S chat && adduser -S chat -G chat
+COPY --from=build /build/target/tcp-chat-server.jar /app/server.jar
+USER chat
 EXPOSE 5000
-
-# TODO: Run command
-# Java:   CMD ["java", "-cp", "src", "Server"]
-# Python: CMD ["python3", "src/server.py"]
-# C:      CMD ["./server"]
-CMD ["echo", "Replace this CMD with your server start command"]
+ENTRYPOINT ["java", "-jar", "/app/server.jar"]

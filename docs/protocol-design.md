@@ -1,222 +1,131 @@
 # Simple Chat Protocol — SCP/1.0
 
-> Tài liệu này đặc tả giao thức tầng ứng dụng giữa web gateway (TCP client) và Java chat server. Browser dùng
-> WebSocket tới gateway vì browser không hỗ trợ raw TCP; WebSocket không thay thế giao thức SCP/1.0.
+SCP/1.0 là giao thức tầng ứng dụng giữa JavaFX desktop client và Java server. Hai chương trình độc lập, giao tiếp trực tiếp bằng raw TCP socket.
 
-## 1. Overview
+## 1. Transport and framing
 
-| Property | Our choice | Why |
-|----------|------------|-----|
-| Protocol | Simple Chat Protocol — `SCP/1.0` | Có version để phát hiện client/server không tương thích |
-| Transport | TCP | Chat cần tin cậy và đúng thứ tự; UDP sẽ cần tự làm retransmission và ordering |
-| Default port | `5000` | Cấu hình qua biến môi trường, không hard-code trong code |
-| Framing | 4-byte unsigned big-endian length prefix | TCP là byte stream; prefix cho phép đọc đúng một JSON dù dữ liệu bị chia/gộp |
-| Data format | UTF-8 JSON | Dễ debug, độc lập ngôn ngữ và phù hợp dữ liệu chat |
-| Session model | Stateful | Server nhớ handshake và tài khoản đăng nhập trên từng connection |
-| Chat model | Một kênh tổng | Mọi người dùng đã xác thực đều nhận broadcast |
-
-## 2. Message Framing
+| Property | Value | Rationale |
+|---|---|---|
+| Transport | TCP | Tin cậy và đúng thứ tự; không phải tự làm ACK/retransmission như UDP |
+| Default port | `5000` | Lấy từ environment |
+| Encoding | UTF-8 JSON | Dễ debug và độc lập ngôn ngữ |
+| Framing | 4-byte unsigned big-endian length + body | Xử lý đúng TCP split/coalescing |
+| Maximum body | 65,536 bytes | Chặn prefix độc hại gây cấp phát quá lớn |
 
 ```text
-+--------------------------+---------------------------------------+
-| Length N (4 bytes, BE)   | N bytes UTF-8 JSON payload            |
-+--------------------------+---------------------------------------+
++------------------------+------------------------------+
+| N: 4 bytes, big-endian | N bytes UTF-8 JSON           |
++------------------------+------------------------------+
 ```
 
-- `N` là số byte của JSON UTF-8, không phải số ký tự và không tính 4 byte prefix.
-- `1 <= N <= 65,536`. Receiver đọc đủ 4 byte prefix rồi lặp đến khi nhận đủ `N` byte body.
-- Không giả định một lần `read()` trả trọn frame; một `read()` cũng có thể chứa dữ liệu của nhiều frame.
-- Nếu `N = 0` hoặc `N > 65,536`, server gửi `ERROR` code `413` nếu còn ghi được rồi đóng connection, không cấp
-  phát buffer theo độ dài sai.
-- JSON sai cú pháp/schema nhận `400`. Sau 3 lỗi malformed trên cùng connection, server đóng connection. Đăng nhập
-  sai không tính là malformed.
+Receiver phải `readFully(4)`, kiểm tra `1 <= N <= 65,536`, rồi lặp tới khi đủ N byte. `read()` không tương ứng với message: một frame có thể bị chia qua nhiều packet hoặc nhiều frame nằm trong cùng một packet. `N=0`/quá lớn nhận `413` nếu socket còn ghi được rồi connection bị đóng. JSON/schema sai nhận `400`; ba malformed strike đóng connection.
 
-## 3. Message Format
+## 2. Envelope
 
 Request:
 
 ```json
-{
-  "type": "LOGIN",
-  "requestId": "r-102",
-  "payload": { "username": "alice", "password": "example-only" }
-}
+{"type":"LOGIN","requestId":"r-102","payload":{"email":"alice@example.com","password":"example-only"}}
 ```
-
-| Field | Rule |
-|-------|------|
-| `type` | Chuỗi in hoa; phải là command đã định nghĩa |
-| `requestId` | Chuỗi 1–64 ký tự, duy nhất trong các request đang chờ của connection |
-| `payload` | JSON object; schema phụ thuộc `type` |
 
 Response:
 
 ```json
-{
-  "type": "LOGIN_RESULT",
-  "requestId": "r-102",
-  "status": 200,
-  "message": "Login successful",
-  "data": { "username": "alice", "displayName": "Alice" }
-}
+{"type":"LOGIN_RESULT","requestId":"r-102","status":200,"message":"Login successful","data":{"uid":"...","email":"alice@example.com"}}
 ```
 
-Server event:
+Event:
 
 ```json
-{
-  "type": "CHAT_MESSAGE",
-  "eventId": "e-381",
-  "payload": {
-    "from": "alice",
-    "displayName": "Alice",
-    "content": "Xin chào",
-    "sentAt": "2026-11-03T09:15:30Z"
-  }
-}
+{"type":"CHAT_MESSAGE","eventId":"...","payload":{"messageId":"...","senderUid":"...","email":"alice@example.com","content":"Xin chào","sentAt":"2026-11-04T14:00:00Z"}}
 ```
 
-Response giữ nguyên `requestId`; event dùng `eventId` và không có `requestId`. Thời gian dùng UTC ISO-8601.
-Password/password hash không bao giờ xuất hiện trong response, event hoặc log.
+- `type`: command in hoa đã định nghĩa.
+- `requestId`: 1–64 ký tự, response giữ nguyên ID để client ghép `CompletableFuture`.
+- `payload`: JSON object, kể cả command không có tham số.
+- `eventId`: UUID do server sinh; event không có `requestId`.
+- Thời gian: UTC ISO-8601. Password/hash không xuất hiện trong response, event hoặc log.
 
-## 4. Connection State
+## 3. Connection state
 
-```text
-CONNECTED --HELLO/200--> READY --LOGIN/200--> AUTHENTICATED
-READY --REGISTER/201--> READY
-AUTHENTICATED --LOGOUT/200--> READY
-CONNECTED | READY | AUTHENTICATED --QUIT--> CLOSED
+```mermaid
+stateDiagram-v2
+    [*] --> CONNECTED
+    CONNECTED --> READY: HELLO / 200
+    READY --> AUTHENTICATED: LOGIN / 200
+    READY --> READY: REGISTER, PING
+    AUTHENTICATED --> AUTHENTICATED: SEND_MESSAGE, LIST_USERS, LIST_MESSAGES, PING
+    AUTHENTICATED --> READY: LOGOUT
+    CONNECTED --> CLOSED: bad version / protocol error / timeout
+    READY --> CLOSED: QUIT / EOF / timeout
+    AUTHENTICATED --> CLOSED: QUIT / EOF / timeout
 ```
 
-- Command đầu tiên phải là `HELLO`; nếu không, trả `400 INVALID_STATE`.
-- `REGISTER`, `LOGIN` chỉ hợp lệ ở `READY`.
-- `SEND_MESSAGE`, `LIST_USERS`, `LOGOUT` chỉ hợp lệ ở `AUTHENTICATED`.
-- `PING`, `QUIT` hợp lệ ở mọi trạng thái.
-- Một username chỉ có một session online; login lần hai nhận `409 ALREADY_ONLINE`.
+Command đầu tiên phải là `HELLO`. Một `uid` chỉ có một session online; login lần hai nhận `409`. Client có thể gửi `PING` định kỳ; server timeout connection im lặng sau 90 giây.
 
-## 5. Command Reference
+## 4. Commands
 
 | Command | State | Payload | Response | Purpose |
-|---------|-------|---------|----------|---------|
-| `HELLO` | CONNECTED | `protocolVersion`, `clientName` | `HELLO_RESULT` 200/426 | Kiểm tra version và vào READY |
-| `REGISTER` | READY | `username`, `displayName`, `password` | `REGISTER_RESULT` 201/409/422 | Tạo tài khoản, không tự đăng nhập |
-| `LOGIN` | READY | `username`, `password` | `LOGIN_RESULT` 200/401/409 | Xác thực và đăng ký session online |
-| `SEND_MESSAGE` | AUTHENTICATED | `content` | `SEND_MESSAGE_RESULT` 200/422 | Gửi tin vào chat tổng |
-| `LIST_USERS` | AUTHENTICATED | `{}` | `LIST_USERS_RESULT` 200 | Lấy snapshot người online |
-| `LOGOUT` | AUTHENTICATED | `{}` | `LOGOUT_RESULT` 200 | Gỡ session, quay lại READY |
-| `PING` | any | `clientTime` tùy chọn | `PONG` 200 | Kiểm tra liveness |
-| `QUIT` | any | `reason` tùy chọn | `QUIT_ACK` 200 rồi đóng | Đóng có trật tự |
+|---|---|---|---|---|
+| `HELLO` | CONNECTED | `protocolVersion`, `clientName` | `HELLO_RESULT` 200/426 | Thỏa thuận `SCP/1.0` |
+| `REGISTER` | READY | `email`, `password` | `REGISTER_RESULT` 201/409/422 | Tạo tài khoản, chưa login |
+| `LOGIN` | READY | `email`, `password` | `LOGIN_RESULT` 200/401/409 | Xác thực session |
+| `SEND_MESSAGE` | AUTHENTICATED | `content` | `SEND_MESSAGE_RESULT` 200/422 | Lưu và broadcast |
+| `LIST_USERS` | AUTHENTICATED | `{}` | `LIST_USERS_RESULT` 200 | Snapshot người online |
+| `LIST_MESSAGES` | AUTHENTICATED | `limit` (1–100) | `LIST_MESSAGES_RESULT` 200 | Lịch sử gần nhất |
+| `LOGOUT` | AUTHENTICATED | `{}` | `LOGOUT_RESULT` 200 | Gỡ session, về READY |
+| `PING` | any | `{}` | `PONG` 200 | Keep-alive |
+| `QUIT` | any | `{}` | `QUIT_ACK` 200 | Đóng chủ động |
 
 Validation:
 
-- `username`: 3–32 ký tự ASCII, regex `^[a-zA-Z0-9_]+$`; so sánh không phân biệt hoa/thường và lưu lowercase.
-- `displayName`: 1–50 ký tự Unicode sau khi trim.
-- `password`: 8–72 byte UTF-8; chỉ truyền trong `REGISTER`/`LOGIN`, chỉ lưu hash có salt.
-- `content`: 1–2,000 ký tự Unicode sau khi trim; không chấp nhận rỗng.
+- `email`: trim, lowercase, tối đa 254 ký tự, dạng `local@domain.tld`; unique trong PostgreSQL.
+- `password`: 8–72 byte UTF-8; server băm SHA-256 và chỉ lưu 64 ký tự hex.
+- `content`: trim, 1–2,000 Unicode code point.
+- `limit`: server clamp về 1–100, mặc định 50.
 
-## 6. Server Events
+## 5. Events
 
-| Event | Recipients | Payload | When |
-|-------|------------|---------|------|
-| `CHAT_MESSAGE` | Mọi session authenticated, gồm người gửi | `from`, `displayName`, `content`, `sentAt` | Sau khi chấp nhận `SEND_MESSAGE` |
-| `USER_JOINED` | Các session authenticated khác | `username`, `displayName` | Sau `LOGIN` thành công |
-| `USER_LEFT` | Các session authenticated còn lại | `username`, `displayName`, `reason` | Logout, quit, EOF, reset hoặc timeout |
+| Event | Recipients | Payload |
+|---|---|---|
+| `CHAT_MESSAGE` | Mọi session authenticated, gồm sender | `messageId`, `senderUid`, `email`, `content`, `sentAt` |
+| `USER_JOINED` | Các session khác | `uid`, `email` |
+| `USER_LEFT` | Các session còn lại | `uid`, `email`, `reason` |
 
-Server validate → trả `SEND_MESSAGE_RESULT` → broadcast `CHAT_MESSAGE`. Thứ tự giữa hai người gửi đồng thời không
-được đảm bảo toàn cục, nhưng frame trên cùng socket phải nguyên vẹn và theo thứ tự server ghi.
+`SEND_MESSAGE_RESULT` được ghi về sender trước khi `CHAT_MESSAGE` được broadcast. Mỗi socket có `sendLock`, vì response thread và broadcast thread có thể cùng ghi; nếu không khóa, bytes của hai frame có thể xen kẽ.
 
-## 7. Status Codes
+## 6. Status codes
 
 | Code | Name | Meaning |
-|:----:|------|---------|
-| 200 | `OK` | Thành công |
-| 201 | `CREATED` | Tạo tài khoản thành công |
-| 400 | `BAD_REQUEST` | JSON/schema sai, command lạ hoặc sai state |
-| 401 | `UNAUTHORIZED` | Sai đăng nhập hoặc chưa đăng nhập |
-| 409 | `CONFLICT` | Username tồn tại hoặc tài khoản đang online |
-| 413 | `TOO_LARGE` | Frame vượt 65,536 byte |
-| 422 | `VALIDATION_ERROR` | Field vi phạm độ dài/định dạng |
-| 426 | `VERSION_UNSUPPORTED` | Version SCP không hỗ trợ |
-| 429 | `TOO_MANY_REQUESTS` | Vượt giới hạn request/message |
-| 500 | `INTERNAL_ERROR` | Lỗi server; không trả stack trace |
-| 503 | `SERVER_BUSY` | Đạt giới hạn connection/worker |
+|---:|---|---|
+| 200 | OK | Thành công |
+| 201 | CREATED | Account được tạo |
+| 400 | BAD_REQUEST | Sai JSON/schema/command/state |
+| 401 | UNAUTHORIZED | Sai credentials hoặc chưa login |
+| 409 | CONFLICT | Email tồn tại hoặc account đang online |
+| 413 | TOO_LARGE | Frame vượt giới hạn |
+| 422 | VALIDATION_ERROR | Field không hợp lệ |
+| 426 | VERSION_UNSUPPORTED | Không phải SCP/1.0 |
+| 500 | INTERNAL_ERROR | Lỗi server, không lộ stack trace |
+| 503 | SERVER_BUSY | Hết worker/connection capacity |
 
-## 8. Main Flows
-
-### Register and login
+## 7. Main flow
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant G as Web gateway (TCP client)
-    participant S as TCP server
-    G->>S: TCP connect + HELLO SCP/1.0
-    S-->>G: HELLO_RESULT 200
-    G->>S: REGISTER username/displayName/password
-    alt valid and available
-        S->>S: hash password and persist account
-        S-->>G: REGISTER_RESULT 201
-    else duplicate or invalid
-        S-->>G: REGISTER_RESULT 409/422
-    end
-    G->>S: LOGIN username/password
-    alt valid and not online
-        S->>S: add active session
-        S-->>G: LOGIN_RESULT 200
-        S-->>G: USER_JOINED broadcast to others
-    else invalid or already online
-        S-->>G: LOGIN_RESULT 401/409
-    end
+    participant C as JavaFX client
+    participant S as Java TCP server
+    participant P as PostgreSQL
+    C->>S: TCP connect + framed HELLO
+    S-->>C: HELLO_RESULT 200
+    C->>S: framed LOGIN email/password
+    S->>P: SELECT password_hash
+    S-->>C: LOGIN_RESULT 200
+    C->>S: framed SEND_MESSAGE
+    S->>P: INSERT message
+    S-->>C: SEND_MESSAGE_RESULT + CHAT_MESSAGE
 ```
 
-### General chat
+## 8. Password decision
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant A as Alice gateway
-    participant S as TCP server
-    participant B as Bob gateway
-    A->>S: SEND_MESSAGE {content}
-    S->>S: validate session/content
-    S-->>A: SEND_MESSAGE_RESULT 200
-    S-->>A: CHAT_MESSAGE
-    S-->>B: CHAT_MESSAGE
-```
-
-### Abrupt disconnect
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant A as Alice gateway
-    participant S as TCP server
-    participant B as Bob gateway
-    A-xS: EOF / reset / timeout
-    S->>S: remove Alice session exactly once
-    S->>S: close socket and release worker
-    S-->>B: USER_LEFT {username, reason}
-```
-
-## 9. Limits, Timeouts and Safety
-
-| Rule | Value | Reason |
-|------|-------|--------|
-| Max frame body | 65,536 bytes | Chặn cấp phát theo prefix độc hại |
-| Max chat content | 2,000 Unicode characters | Giới hạn abuse và UI |
-| Read idle timeout | 90 seconds | Phát hiện connection im lặng |
-| Keep-alive | Gateway gửi `PING` mỗi 30 seconds | Kiểm tra đường truyền |
-| Max TCP clients | 100, configurable | Khớp blocking fixed pool |
-| Malformed strikes | 3 per connection | Cho phép lỗi vô ý, hạn chế spam parser |
-| Password storage | Salted adaptive hash | Không lưu plaintext; ghi thuật toán/cost khi triển khai |
-
-TLS, end-to-end encryption và reset password nằm ngoài M3. Không dùng mật khẩu thật khi demo.
-
-## 10. Design Rationale
-
-- **TCP thay UDP:** reliability và ordering phù hợp chat; không phải tự làm ACK/retransmission.
-- **Length prefix thay delimiter:** JSON có thể chứa newline và cách này minh họa TCP split/coalescing; phải kiểm tra
-  length trước khi cấp phát.
-- **JSON thay binary:** dễ đọc/debug khi vấn đáp; frame lớn hơn và cần validation chặt.
-- **Stateful session:** cần biết connection đã login để phân quyền/presence; cleanup disconnect phức tạp hơn.
-- **Gateway thay WebSocket trực tiếp ở server:** browser có UI web nhưng giao thức được chấm vẫn là SCP/1.0 raw TCP.
+Yêu cầu sản phẩm bắt buộc SHA-256 nên implementation dùng `SHA-256(UTF-8(password))`, hex lowercase, và so sánh bằng `MessageDigest.isEqual`. Đây là hash nhanh, không salt và **không phải lựa chọn khuyến nghị cho production** vì dễ brute-force/rainbow table. Phương án tốt hơn là Argon2id, bcrypt hoặc PBKDF2 với salt/cost; đổi thuật toán sẽ cần thêm metadata vào bảng users và migration protocol/storage.

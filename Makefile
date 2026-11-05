@@ -15,8 +15,8 @@ down: ## Stop and remove containers
 logs: ## Follow logs of running containers
 	docker compose logs -f
 
-client: ## Run one interactive client (repeat in other terminals)
-	docker compose run --rm client
+client: ## Run one native JavaFX client (requires JDK 21+ and Maven)
+	cd client && mvn javafx:run
 
 smoke: ## Check that the server accepts TCP connections
 	@bash scripts/smoke-test.sh

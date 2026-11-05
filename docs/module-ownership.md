@@ -40,25 +40,25 @@ xen kẽ trên socket; xử lý prefix sai và slow client.
 **Ranh giới:** cung cấp API thread-safe, không encode frame; repository là nơi duy nhất đọc/ghi account; plaintext
 password không rời auth service hoặc xuất hiện trong log; cleanup dùng key + expected session.
 
-**Cần bảo vệ:** client thứ 101; race khi register/login cùng username; `putIfAbsent`; không khóa khi broadcast;
+**Cần bảo vệ:** client thứ 101; race khi register/login cùng email; `putIfAbsent`; không khóa khi broadcast;
 cleanup cho QUIT, EOF, reset, timeout và shutdown.
 
 **Live change phù hợp:** đổi max clients/timeout qua env, policy login trùng hoặc thêm account field.
 
-## 3. Quách Thành Đạt — Web Client, TCP Gateway & End-to-End Tests
+## 3. Quách Thành Đạt — JavaFX TCP Client & End-to-End Tests
 
 **Modules dự kiến**
 
-- `client/.../web/`: đăng ký, đăng nhập, chat tổng, online users, error/loading state.
-- `client/.../gateway/`: WebSocket, ánh xạ 1:1 TCP, SCP client codec, close propagation.
-- `tests/e2e/`: browser → gateway → server, Docker smoke, reconnect/disconnect, server errors.
+- `client/.../ChatApplication.java`: đăng ký, đăng nhập, chat tổng, online users, error/loading state.
+- `client/.../TcpChatClient.java`: TCP lifecycle, SCP codec, response correlation và server events.
+- `tests/e2e/`: JavaFX client → server, Docker smoke, reconnect/disconnect, server errors.
 - Đồng sở hữu `docs/testing-guide.md` và deployment client.
 
-**Ranh giới:** gateway không truy cập account store/luật nghiệp vụ; mỗi browser có một TCP socket; giữ nguyên
-`requestId`; một đầu đóng thì đóng đầu kia và dọn socket/timer/listener.
+**Ranh giới:** client không truy cập account store/luật nghiệp vụ; mỗi app có một TCP socket; giữ nguyên
+`requestId`; đóng cửa sổ thì đóng socket và server dọn session.
 
-**Cần bảo vệ:** vì sao browser cần gateway; WebSocket khác SCP/TCP; ghép response theo `requestId` trong khi event
-đến bất kỳ lúc nào; Docker DNS `server:5000`; UI xử lý login sai, server busy và TCP reset.
+**Cần bảo vệ:** vì sao JavaFX không cần WebSocket; ghép response theo `requestId` trong khi event đến bất kỳ lúc
+nào; không block Application Thread; UI xử lý login sai, server busy và TCP reset.
 
 **Live change phù hợp:** thêm form validation, hiển thị status code hoặc reconnect indicator.
 
@@ -68,15 +68,15 @@ cleanup cho QUIT, EOF, reset, timeout và shutdown.
 |----------|---------------|-------------------|
 | SCP frame/message schema | Nguyễn Đức Hải | Quách Thành Đạt |
 | Session/auth state machine | Ngô Hoàng Minh | Nguyễn Đức Hải |
-| Gateway close/error mapping | Quách Thành Đạt | Ngô Hoàng Minh |
+| Client close/error mapping | Quách Thành Đạt | Ngô Hoàng Minh |
 | Docker networking/env | Quách Thành Đạt | Ngô Hoàng Minh |
 | Register/login/chat E2E | Quách Thành Đạt | Nguyễn Đức Hải và Ngô Hoàng Minh |
 
 ## 5. Minimum Knowledge for Everyone
 
-1. Browser → WebSocket gateway → TCP server và chiều ngược lại.
+1. JavaFX client → TCP server và chiều ngược lại.
 2. Frame `4-byte big-endian length + UTF-8 JSON`.
 3. State `CONNECTED → READY → AUTHENTICATED → CLOSED`.
 4. Shared state nào cần bảo vệ và vì sao server cần concurrency.
-5. Docker, `server:5000`, địa chỉ browser và cách xem log.
+5. Docker server, `localhost:5000`, JavaFX native client và cách xem log.
 6. Một happy-path test, một malformed test và một abrupt-disconnect test.

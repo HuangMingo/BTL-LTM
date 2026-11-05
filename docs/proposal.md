@@ -7,7 +7,7 @@
 ## 1. Team & Topic
 
 - **Team:** Nhóm 001 — Nguyễn Đức Hải, Ngô Hoàng Minh, Quách Thành Đạt
-- **Topic:** Ứng dụng web chat thời gian thực có tài khoản, sử dụng giao thức tự thiết kế trên Java TCP Socket
+- **Topic:** Ứng dụng desktop JavaFX chat thời gian thực có tài khoản, sử dụng giao thức tự thiết kế trên Java TCP Socket
 - **Thông tin cần bổ sung:** Mã sinh viên đầy đủ và tài khoản GitHub của Nguyễn Đức Hải, Quách Thành Đạt
 
 ## 2. Problem
@@ -20,10 +20,8 @@ không phù hợp khi người quản trị muốn kiểm soát server và giao 
 ## 3. Idea
 
 Một Java TCP server trung tâm cho phép nhiều người dùng đăng ký, đăng nhập và trao đổi tin nhắn trong kênh chat
-chung bằng giao diện web. Vì trình duyệt không mở raw TCP socket, web client gồm giao diện chạy trong browser và
-một gateway: mỗi kết nối WebSocket của browser được ánh xạ một-một sang một TCP socket tới server. Gateway chỉ
-chuyển đổi biên truyền tải; mọi lệnh nghiệp vụ, trạng thái phiên và mã lỗi vẫn do giao thức TCP của nhóm quy định.
-Hệ thống kiểm thử TCP bị phân mảnh/gộp dữ liệu, nhiều người gửi đồng thời và ngắt kết nối đột ngột.
+chung bằng giao diện desktop JavaFX. Mỗi client mở một raw TCP socket trực tiếp tới server và tự thực hiện framing
+SCP/1.0. Hệ thống kiểm thử TCP bị phân mảnh/gộp dữ liệu, nhiều người gửi đồng thời và ngắt kết nối đột ngột.
 
 ## 4. Scope
 
@@ -40,8 +38,8 @@ Hệ thống kiểm thử TCP bị phân mảnh/gộp dữ liệu, nhiều ngư�
 Thách thức chính là phát một tin nhắn nhất quán tới nhiều client đã xác thực và đọc đúng ranh giới thông điệp trên
 luồng TCP. Mỗi JSON UTF-8 có tiền tố độ dài 4 byte big-endian; bên nhận đọc đủ prefix, kiểm tra giới hạn rồi đọc
 đúng số byte của body. Server phải cập nhật nguyên tử kho tài khoản và danh sách phiên online, đồng thời tuần tự
-hóa thao tác gửi tới cùng một socket để các frame từ nhiều worker không ghi xen kẽ. Web gateway phải duy trì ánh
-xạ một-một giữa WebSocket và TCP socket, truyền nguyên vẹn `requestId` và đóng cả hai đầu khi một đầu bị ngắt.
+  hóa thao tác gửi tới cùng một socket để các frame từ nhiều worker không ghi xen kẽ. JavaFX client có reader thread
+  riêng, ghép response theo `requestId` và chuyển server event về Application Thread.
 
 ## 6. Initial Design Sketch
 
@@ -63,13 +61,12 @@ xạ một-một giữa WebSocket và TCP socket, truyền nguyên vẹn `reques
   | `QUIT` | Client → Server | Kết thúc phiên một cách chủ động |
 
   Server phản hồi từng yêu cầu và dùng các sự kiện `CHAT_MESSAGE`, `USER_JOINED`, `USER_LEFT` để cập nhật client.
-- **Authentication:** Tên người dùng được chuẩn hóa để kiểm tra trùng; mật khẩu không ghi log và chỉ được lưu dưới
-  dạng hash có salt. Một tài khoản chỉ có một phiên online tại một thời điểm trong phiên bản đầu.
+- **Authentication:** Email được trim/lowercase để kiểm tra trùng; mật khẩu không ghi log và chỉ được lưu dạng
+  SHA-256 hex theo yêu cầu. Một tài khoản chỉ có một phiên online tại một thời điểm.
 - **Concurrency model:** Blocking socket với fixed thread pool và giới hạn số kết nối. Cách này dễ giải thích và
   kiểm thử hơn NIO event loop; mỗi TCP connection dài hạn chiếm một worker nên giới hạn pool cũng là giới hạn client.
-- **Client web:** Browser dùng WebSocket tới gateway; gateway mở một TCP socket riêng tới server cho mỗi browser.
-  Gateway không chứa luật nghiệp vụ và không truy cập trực tiếp kho tài khoản.
-- **Languages:** Java cho TCP server; công nghệ web/gateway sẽ được cố định khi bắt đầu M2 và ghi vào kiến trúc.
+- **Client desktop:** JavaFX mở một TCP socket trực tiếp; network I/O chạy ngoài Application Thread để UI không treo.
+- **Languages:** Java 21 cho server và JavaFX client; CSS cho visual design.
 
 ## 7. Alternatives Considered
 
@@ -81,9 +78,9 @@ xạ một-một giữa WebSocket và TCP socket, truyền nguyên vẹn `reques
 | JSON phân cách bằng ký tự xuống dòng | No | Đơn giản hơn nhưng phụ thuộc vào quy tắc escape và khó mở rộng an toàn cho payload phức tạp |
 | Fixed thread pool + blocking socket | Yes | Dễ triển khai, giới hạn tài nguyên và phù hợp với quy mô bài tập |
 | Java NIO/event loop | No, for now | Có khả năng mở rộng tốt hơn nhưng quản lý trạng thái phức tạp hơn và khó hoàn thành đúng thời hạn |
-| WebSocket làm giao thức server chính | No | WebSocket làm framing hộ và làm yếu phần tự thiết kế giao thức TCP |
-| Web UI + gateway TCP | Yes | Trình duyệt có giao diện web nhưng server vẫn nhận đúng giao thức TCP tự thiết kế |
-| Lưu mật khẩu dạng rõ | No | Không an toàn; server chỉ lưu password hash có salt và không ghi mật khẩu vào log |
+| Browser + WebSocket gateway | No | Thêm một bridge và hai lifecycle; JavaFX có thể mở raw TCP trực tiếp |
+| JavaFX desktop client | Yes | Một giao thức TCP end-to-end, phù hợp mục tiêu môn học |
+| Lưu mật khẩu dạng rõ | No | Server chỉ lưu SHA-256 hex; production nên thay bằng Argon2id/bcrypt có salt |
 
 ## 8. Ownership Plan
 
@@ -93,7 +90,7 @@ Phân công dưới đây là đề xuất ban đầu và phải được cả n
 |--------|--------------------------------|
 | Nguyễn Đức Hải | Giao thức, framing/parser phía server và client; đồng sở hữu `docs/protocol-design.md` |
 | Ngô Hoàng Minh | Server, quản lý phiên/người dùng và an toàn luồng; đồng sở hữu `docs/architecture.md` |
-| Quách Thành Đạt | Web client/gateway, kiểm thử tích hợp và các tình huống lỗi; đồng sở hữu `docs/testing-guide.md` |
+| Quách Thành Đạt | JavaFX client, kiểm thử tích hợp và các tình huống lỗi; đồng sở hữu `docs/testing-guide.md` |
 
 Mỗi thành viên chịu trách nhiệm mã nguồn, kiểm thử và tài liệu liên quan đến component của mình.
 Ranh giới module, integration contract và bộ câu hỏi vấn đáp được ghi tại
@@ -109,8 +106,8 @@ Ranh giới module, integration contract và bộ câu hỏi vấn đáp đượ
 | Cạn thread hoặc client chậm làm server bị chặn | Đo tải, giới hạn pool/kích thước thông điệp và nghiên cứu hàng đợi gửi có giới hạn trong M2 |
 | Nhóm chưa quen Docker hoặc lập trình mạng Java | Làm walking skeleton sớm: Docker chạy được, nhiều client kết nối và `HELLO` hoạt động end-to-end |
 | Gateway che mất lỗi giao thức TCP | Viết test codec/socket trực tiếp vào port 5000, không chỉ kiểm thử qua trình duyệt |
-| Sai lệch trạng thái giữa WebSocket và TCP khi một đầu đóng | Ánh xạ 1–1, đóng đối xứng hai đầu và dọn phiên server trong `finally` |
-| Lộ mật khẩu trong log hoặc kho dữ liệu | Không log payload của `REGISTER`/`LOGIN`; chỉ lưu hash có salt; dùng tài khoản giả khi demo |
+| UI bị treo bởi socket blocking | Reader thread + `CompletableFuture`; chỉ cập nhật UI bằng `Platform.runLater` |
+| Lộ mật khẩu trong log hoặc kho dữ liệu | Không log payload auth; chỉ lưu SHA-256; dùng tài khoản giả khi demo |
 | Phạm vi tăng do làm UI quá sớm | Hoàn thành codec, `REGISTER`, `LOGIN` và `SEND_MESSAGE` end-to-end trước khi tinh chỉnh giao diện |
 
 ## 10. Instructor Feedback

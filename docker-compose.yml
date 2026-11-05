@@ -1,41 +1,50 @@
-# Start the server:            docker compose up --build -d
-# Start an interactive client: docker compose run --rm client   (repeat in other terminals for more clients)
-
 services:
+  database:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-LTM_db}
+      POSTGRES_USER: ${POSTGRES_USER:-tcp_chat}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tcp_chat_dev}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    networks: [app-network]
+
   server:
     build: ./server
     ports:
       - "${SERVER_PORT:-5000}:${SERVER_PORT:-5000}"
-    env_file:
-      - path: .env
-        required: false
     environment:
       SERVER_HOST: ${SERVER_HOST:-0.0.0.0}
       SERVER_PORT: ${SERVER_PORT:-5000}
-    restart: "no"
-    networks:
-      - app-network
-    # Optional: add a healthcheck that suits your image, e.g. for images with bash:
-    # healthcheck:
-    #   test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/$${SERVER_PORT}' || exit 1"]
-    #   interval: 10s
-    #   retries: 3
-
-  client:
-    build: ./client
-    profiles: ["client"]        # not started by `docker compose up`; use `docker compose run --rm client`
-    stdin_open: true            # interactive CLI
-    tty: true
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      CLIENT_TARGET_HOST: ${CLIENT_TARGET_HOST:-server}
-      CLIENT_TARGET_PORT: ${CLIENT_TARGET_PORT:-5000}
+      MAX_CLIENTS: ${MAX_CLIENTS:-100}
+      IDLE_TIMEOUT_SECONDS: ${IDLE_TIMEOUT_SECONDS:-90}
+      DATABASE_URL: jdbc:postgresql://database:5432/${POSTGRES_DB:-LTM_db}
+      DATABASE_USER: ${POSTGRES_USER:-tcp_chat}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-tcp_chat_dev}
     depends_on:
-      - server
-    networks:
-      - app-network
+      database:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [app-network]
+
+  pgadmin:
+    image: dpage/pgadmin4:9
+    profiles: [tools]
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-change-me-for-local-use}
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    depends_on: [database]
+    networks: [app-network]
+
+volumes:
+  postgres-data:
 
 networks:
   app-network:

@@ -1,152 +1,114 @@
 # System Architecture
 
-> Kiến trúc mục tiêu cho web chat SCP/1.0. Cập nhật tài liệu nếu package/class thực tế thay đổi trong M2.
-
-## 1. System Context
+## 1. Context
 
 ```mermaid
 graph LR
-    B1["Browser A"] -->|WebSocket JSON| G["Web client + gateway"]
-    B2["Browser B"] -->|WebSocket JSON| G
-    G -->|"one TCP socket per browser<br/>SCP/1.0 frames"| S["Java TCP chat server :5000"]
-    S --> AR[("Account store")]
-    S --> SM[("Online sessions")]
+    C1[JavaFX client A] -->|SCP/1.0 over TCP| S[Java TCP server :5000]
+    C2[JavaFX client B] -->|SCP/1.0 over TCP| S
+    S -->|JDBC| P[(PostgreSQL :5432)]
 ```
 
-Browser không mở raw TCP socket. Gateway thuộc client: nó phục vụ web, nhận WebSocket và mở một TCP socket độc
-lập tới server cho mỗi browser. Gateway chuyển WebSocket JSON thành SCP frame và ngược lại; nó không xác thực tài
-khoản và không quyết định luật chat.
+`client/` và `server/` là hai chương trình Java độc lập, không import source của nhau. Hợp đồng duy nhất là `docs/protocol-design.md`. JavaFX desktop client mở `java.net.Socket` trực tiếp nên không cần HTTP, WebSocket hay gateway trung gian.
 
-## 2. Server Concurrency Model
+## 2. Repository modules
 
-Server dùng blocking I/O với `ThreadPoolExecutor` cố định, tối đa mặc định 100 worker. Accept loop chỉ nhận socket
-và giao `ClientHandler` cho pool. Mỗi connection dài hạn chiếm một worker; khi đạt giới hạn, server trả
-`503 SERVER_BUSY` nếu có thể rồi đóng socket mới.
+| Path | Responsibility |
+|---|---|
+| `server/.../Protocol.java` | Frame reader/writer, JSON envelope, giới hạn frame |
+| `server/.../ClientHandler.java` | State machine và command trên một connection |
+| `server/.../SessionManager.java` | Online registry và broadcast thread-safe |
+| `server/.../Database.java` | JDBC migrations, users, messages |
+| `server/.../PasswordHasher.java` | SHA-256 theo yêu cầu |
+| `client/.../ProtocolCodec.java` | Client-side framing độc lập |
+| `client/.../TcpChatClient.java` | Socket, reader thread, pending requests/events |
+| `client/.../ChatApplication.java` | JavaFX screens, state và UI actions |
+| `client/.../app.css` | Design tokens/layout lấy cảm hứng từ Figma |
 
-Mô hình phù hợp quy mô lớp học và dễ test/giải thích hơn Java NIO. Trade-off: số client bị giới hạn bởi worker;
-nếu cần hàng nghìn client sẽ cân nhắc NIO `Selector`, không tăng thread vô hạn.
+## 3. Server concurrency
+
+Server dùng blocking socket với fixed `ThreadPoolExecutor` + `SynchronousQueue`. Accept loop chỉ nhận socket và submit; mỗi TCP connection sống chiếm một worker. `MAX_CLIENTS` mặc định 100. Pool đầy thì server cố gửi frame `503 SERVER_BUSY` rồi đóng client mới.
 
 ```mermaid
 graph LR
-    L["ConnectionListener<br/>accept loop"] --> P["Bounded fixed thread pool"]
-    P --> H1["ClientHandler A"]
-    P --> H2["ClientHandler B"]
-    P --> HN["ClientHandler N"]
-    H1 --> C["ProtocolCodec"]
-    H2 --> C
-    HN --> C
-    H1 --> D["CommandDispatcher"]
-    H2 --> D
-    HN --> D
+    A[ServerSocket accept] --> P[fixed bounded pool]
+    P --> H1[ClientHandler A]
+    P --> H2[ClientHandler B]
+    H1 --> SM[SessionManager]
+    H2 --> SM
+    H1 --> DB[Database/JDBC]
+    H2 --> DB
 ```
 
-## 3. Components and Planned Modules
+Trade-off: dễ giải thích/kiểm thử và bounded; mỗi idle connection vẫn chiếm platform thread. Nếu cần hàng nghìn client, cân nhắc Java NIO hoặc virtual threads.
 
-| Planned path/module | Responsibility | Planned owner |
-|---------------------|----------------|---------------|
-| `server/.../protocol/` | Frame reader/writer, JSON codec, validation, message types/status | Nguyễn Đức Hải |
-| `server/.../server/` | Bootstrap, env config, accept loop, worker pool, shutdown | Ngô Hoàng Minh |
-| `server/.../auth/` | Register/login/logout, password hashing, account repository | Ngô Hoàng Minh |
-| `server/.../session/` | Online registry, unique login, presence and cleanup | Ngô Hoàng Minh |
-| `server/.../chat/` | `SEND_MESSAGE`, `LIST_USERS`, general broadcast orchestration | Nguyễn Đức Hải |
-| `client/.../gateway/` | WebSocket lifecycle, 1:1 TCP bridge, reconnect/error mapping | Quách Thành Đạt |
-| `client/.../web/` | Register/login/chat/presence UI and client state | Quách Thành Đạt |
-| `tests/protocol/` | Split/coalesced/oversized frame and schema tests | Nguyễn Đức Hải |
-| `tests/server/` | Auth race, duplicate login, cleanup and load tests | Ngô Hoàng Minh |
-| `tests/e2e/` | Browser–gateway–server flows and Docker smoke tests | Quách Thành Đạt |
+## 4. Client concurrency
 
-Đây là **phân công dự kiến**, không phải bằng chứng đóng góp. Bảng Contribution trong README chỉ điền theo
-commit/PR và phần nhóm thực sự hoàn thành.
+- JavaFX Application Thread chỉ vẽ UI và xử lý action ngắn.
+- `connect()`/request completion dùng `CompletableFuture`, không block UI.
+- Một daemon reader thread duy nhất đọc tuần tự SCP frame.
+- `ConcurrentHashMap<requestId, CompletableFuture>` ghép response với action.
+- Server event không có requestId được chuyển tới listener bằng `Platform.runLater`.
+- `sendLock` giữ trọn thao tác write prefix + body để nhiều action không ghi xen byte.
 
-## 4. Server Component Relationships
+## 5. Shared state and safety
 
-```mermaid
-classDiagram
-    class ServerApplication { +start() +stop() }
-    class ConnectionListener { +acceptLoop() }
-    class ClientHandler { +run() +send(message) +close() }
-    class ProtocolCodec { +readFrame() Message +writeFrame(Message) }
-    class CommandDispatcher { +dispatch(session, message) }
-    class AccountService { +register() +verifyCredentials() }
-    class AccountRepository { +create() +findByUsername() }
-    class SessionManager { +login() +logout() +snapshot() +broadcast() }
-    class ChatService { +sendGeneral() +listUsers() }
-    ServerApplication --> ConnectionListener
-    ConnectionListener --> ClientHandler : submits
-    ClientHandler --> ProtocolCodec
-    ClientHandler --> CommandDispatcher
-    CommandDispatcher --> AccountService
-    AccountService --> AccountRepository
-    CommandDispatcher --> SessionManager
-    CommandDispatcher --> ChatService
-    ChatService --> SessionManager
-```
+| State | Protection | Invariant |
+|---|---|---|
+| Online sessions | `ConcurrentHashMap<UUID, ClientHandler>` + atomic map operations | Một uid/một session |
+| Per-server socket output | Per-handler `sendLock` | Frame không xen kẽ |
+| Cleanup state | `AtomicBoolean.compareAndSet` | Remove/broadcast left đúng một lần |
+| Client pending requests | `ConcurrentHashMap` | Response complete đúng future |
+| Users/messages | PostgreSQL unique/FK constraints | Email unique, message có sender hợp lệ |
 
-## 5. Shared State and Thread Safety
+Broadcast lấy snapshot, không giữ global lock khi network I/O. Write lỗi chỉ cleanup session liên quan.
 
-| Shared state | Accessed by | Protection | Rule |
-|--------------|-------------|------------|------|
-| Account records | Concurrent register/login handlers | Repository transaction + unique normalized username | Hash ngoài global lock; unique constraint chọn winner |
-| Online sessions | Login/logout/chat/disconnect handlers | `ConcurrentHashMap` + atomic `putIfAbsent` | Remove bằng key + expected session |
-| Per-session output | Response and broadcast threads | One `sendLock` per session | Lock chỉ quanh write+flush một frame |
-| Session state | Handler, cleanup, shutdown | Atomic/guarded transition | Cleanup idempotent, `USER_LEFT` đúng một lần |
-| Connection counters | Listener and handlers | Atomic counter/executor metrics | Giảm trong `finally` |
-
-Không giữ khóa toàn cục trong network I/O. Broadcast lấy snapshot rồi gửi từng session; một client chậm/lỗi không
-ngăn gửi cho người khác. Không giữ đồng thời account lock và send lock để tránh deadlock.
-
-## 6. Connection Lifecycle
+## 6. Lifecycle
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Connected : TCP accepted
-    Connected --> Ready : HELLO accepted
-    Connected --> Closing : bad version / timeout / abuse
-    Ready --> Ready : REGISTER / PING
-    Ready --> Authenticated : LOGIN succeeds
-    Authenticated --> Authenticated : SEND_MESSAGE / LIST_USERS / PING
-    Authenticated --> Ready : LOGOUT
-    Authenticated --> Closing : QUIT / EOF / reset / timeout
-    Ready --> Closing : QUIT / EOF / reset / timeout
-    Closing --> Closed : unregister once, close socket, release worker
-    Closed --> [*]
+    [*] --> Connected: Socket connect
+    Connected --> Ready: HELLO 200
+    Ready --> Authenticated: LOGIN 200
+    Authenticated --> Ready: LOGOUT
+    Authenticated --> Closing: EOF/reset/timeout/QUIT
+    Ready --> Closing: EOF/timeout/QUIT
+    Closing --> Closed: CAS cleanup + close + release worker
 ```
 
-Mọi đường thoát qua cleanup idempotent trong `finally`: gỡ đúng session hiện tại, phát `USER_LEFT` nếu cần, đóng
-stream/socket và giải phóng worker/counter. Gateway đóng WebSocket khi TCP đóng và ngược lại.
+Client đóng socket khi cửa sổ JavaFX đóng. Server đi qua `finally/cleanup`; remove `(uid, expectedHandler)` không thể xóa nhầm session mới.
 
-## 7. Authentication and Data
+## 7. Database
 
-- Account gồm normalized username, display name, password hash và creation time.
-- Password chỉ tạm xuất hiện trong `REGISTER`/`LOGIN`; không ghi log, event hoặc response.
-- Repository có unique constraint trên normalized username và tạo account nguyên tử.
-- Một account có một session online; `putIfAbsent` ngăn hai login đồng thời cùng thắng.
-- Chat history không phải Must have; server chỉ broadcast message trong bộ nhớ.
+```mermaid
+erDiagram
+    USERS ||--o{ MESSAGES : sends
+    USERS { uuid uid PK varchar email UK char_64 password_hash }
+    MESSAGES { uuid message_id PK uuid sender_uid FK varchar content timestamptz created_at }
+```
+
+Theo yêu cầu, bảng `users` chỉ có `uid`, `email`, `password_hash`. Email normalize lowercase. Java server chạy migration idempotent khi start; PostgreSQL Compose tạo database/user/volume. pgAdmin chỉ là công cụ quan sát tùy chọn.
 
 ## 8. Deployment
 
 ```mermaid
 graph LR
-    BR["Browser<br/>localhost:8080"] -->|HTTP + WebSocket| CL["client container<br/>web + gateway :8080"]
-    CL -->|"Docker DNS: server:5000"| SV["server container<br/>0.0.0.0:5000"]
-    SV --> DB[("account store")]
+    C[JavaFX native client] -->|localhost:5000| S[server container]
+    S -->|database:5432| DB[(PostgreSQL volume)]
+    PA[optional pgAdmin :5050] --> DB
 ```
 
-| Service | Planned runtime | Exposed port | Configuration |
-|---------|-----------------|--------------|---------------|
-| `server` | Java TCP server | `5000` | `SERVER_HOST`, `SERVER_PORT`, max clients/timeouts/store path |
-| `client` | Web UI + gateway | `8080` | `CLIENT_TARGET_HOST=server`, `CLIENT_TARGET_PORT=5000`, web port |
+- `docker compose up --build` khởi động PostgreSQL + Java server.
+- JavaFX client chạy native bằng Maven; `CLIENT_TARGET_HOST=localhost`, `CLIENT_TARGET_PORT=5000`.
+- Server trong container bind `0.0.0.0`; JDBC dùng Docker DNS `database` qua environment.
 
-Chỉ client container dùng hostname `server`; browser dùng `localhost:8080` hoặc domain/IP host. Không hard-code
-địa chỉ. `docker compose up --build` tối thiểu phải khởi động server; cấu hình cuối M2 phải cung cấp cách khởi động
-web client trong README.
+## 9. Decisions
 
-## 9. Design Decisions
-
-| Decision | Alternatives | Reason and trade-off |
-|----------|--------------|----------------------|
-| Raw TCP server + web gateway | WebSocket server; desktop client | Giữ framing tự thiết kế nhưng thêm adapter lifecycle |
-| 4-byte length-prefixed JSON | Newline; binary | An toàn với newline, dễ debug; cần kiểm tra length |
-| Fixed blocking thread pool | Unlimited threads; NIO | Dễ hiểu và bounded; mỗi client chiếm worker |
-| Stateful authentication | Stateless token | Presence/unique login đơn giản; cleanup khó hơn |
-| One general channel | Multi-room/private chat | Đủ broadcast/concurrency và giữ phạm vi M3 |
+| Decision | Alternative | Reason/trade-off |
+|---|---|---|
+| JavaFX direct TCP | Browser + WebSocket gateway | Một protocol end-to-end, không cần bridge |
+| 4-byte length JSON | Delimiter/binary | An toàn newline, dễ debug; có overhead JSON |
+| Fixed blocking pool | NIO selector | Dễ bảo vệ vấn đáp, bounded ở quy mô môn học |
+| PostgreSQL | In-memory | Persistence và constraint nguyên tử |
+| UUID uid | Sequence | ID opaque, không phụ thuộc DB sequence |
+| SHA-256 | Argon2id/bcrypt | Yêu cầu người dùng; yếu hơn production password hashing |

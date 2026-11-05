@@ -1,37 +1,9 @@
-# OS
-.DS_Store
-Thumbs.db
-node_modules/
-
-# IDE / Editor
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# C/C++
-*.o
-*.obj
-*.exe
-*.dll
-*.so
-
-# Java
-*.class
-*.jar
-*.war
-*.ear
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-venv/
-.env/
-
-# Environment Variables
 .env
-!.env.example
-
-# Docker
-docker-compose.override.yml
+.maven-*.zip
+.maven-local/
+.google-java-format.jar
+client/target/
+server/target/
+*.log
+.idea/
+*.iml

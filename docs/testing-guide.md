@@ -10,7 +10,7 @@
 ### 1.1 Direct TCP protocol test
 
 SCP/1.0 có prefix nhị phân 4 byte nên không thể gõ JSON trực tiếp bằng `nc`/`telnet`. Dùng một script TCP nhỏ để
-kiểm tra server mà không đi qua web gateway:
+kiểm tra server độc lập với JavaFX UI:
 
 ```python
 import json, socket, struct
@@ -93,7 +93,7 @@ print(f"{len(ok)}/{N} succeeded, max latency {max(r[2] for r in ok) if ok else 0
 ```
 
 Script này mới kiểm tra nhiều TCP connection cùng handshake. Test tải đầy đủ phải tạo account test riêng, đăng nhập
-và giữ các connection đồng thời; không dùng chung một username vì SCP/1.0 chỉ cho một phiên online/account.
+và giữ các connection đồng thời; không dùng chung một email vì SCP/1.0 chỉ cho một phiên online/account.
 
 ### 1.3 Abnormal disconnects
 
@@ -105,7 +105,7 @@ và giữ các connection đồng thời; không dùng chung một username vì 
 | Malformed JSON | Send a valid length prefix followed by invalid JSON three times | Server returns 400, then closes after the third strike |
 | Split frame | Send prefix/body one byte at a time | Server reassembles exactly one request and responds once |
 | Server stops | `docker compose stop server` | Client shows a clear error; optionally retries with backoff |
-| Browser closes | Close tab or kill client/gateway container | Gateway closes TCP; server removes authenticated session and broadcasts `USER_LEFT` |
+| JavaFX closes | Close window or kill client process | Socket closes; server removes session and broadcasts `USER_LEFT` |
 
 ### 1.4 Simulating a bad network
 
@@ -128,7 +128,7 @@ tc qdisc del dev eth0 root                           # restore
 | 2 | Register then login | Direct protocol/integration test | | |
 | 3 | Duplicate register and simultaneous duplicate login | Server concurrency test | | |
 | 4 | Two users chat in general channel | Browser E2E + protocol assertions | | |
-| 5 | Client killed mid-session | Kill gateway/browser connection | | |
+| 5 | Client killed mid-session | Kill JavaFX process | | |
 | 6 | Split/coalesced frames | Protocol codec/socket tests | | |
 | 7 | Malformed/oversized frame | Protocol robustness tests | | |
 | 8 | Pool saturation and recovery | Connect over configured max | | |
