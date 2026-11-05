@@ -1,32 +1,21 @@
-# AI Usage Log
+# NHẬT KÝ SỬ DỤNG AI (AI LOG)
 
-> **Mandatory** — see [`INSTRUCTION.md` §7](../INSTRUCTION.md#7-ai-usage-policy).
-> Record the AI interactions that **mattered** — ones that produced or shaped design, code, tests or documentation
-> that ended up in this repository. A few lines each is enough; you do not need to log every prompt.
->
-> Write entries **as you go** (right after the session). The AI assistant configuration in this repo asks your
-> assistant to remind you and to suggest a draft entry — but the "what we kept / verified" column must be yours.
+## Quy định
+File này ghi lại cách nhóm sử dụng các công cụ AI (như Claude, Gemini, Qwen, Copilot...) trong suốt quá trình làm dự án.
 
----
+## Mục 1: Tóm tắt sử dụng AI
+| Giai đoạn | Công cụ AI | Mục đích sử dụng | Mức độ |
+| :--- | :--- | :--- | :--- |
+| M1 - Lên ý tưởng & Thiết kế | Qwen / Claude | Thảo luận kiến trúc, so sánh TCP thuần vs WebSocket, thiết kế 4-byte framing. | Co-write |
+| M1 - Viết tài liệu | Qwen | Soạn thảo nội dung proposal.md, protocol-design.md, architecture.md. | Co-write |
+| M2 - Code Skeleton | Qwen | Viết code mẫu ChatServer, ClientHandler, xử lý TCP stream. | Co-write |
 
-## Log
+## Mục 2: Những quyết định do nhóm tự đưa ra
+- Nhóm quyết định chuyển từ WebSocket sang **TCP Socket thuần** để đáp ứng tốt nhất yêu cầu về "Message Framing" của giảng viên.
+- Nhóm tự thiết kế cấu trúc JSON và bảng Command/Event dựa trên tính năng Chat nhiều phòng.
+- Nhóm quyết định dùng mô hình Thread-per-client và cơ chế `synchronized` block cho việc ghi socket.
 
-| # | Date | Member | Tool / model | Task — what you asked | What AI produced | What you kept, changed or rejected — and how you verified it | Files |
-|:-:|------|--------|--------------|-----------------------|------------------|---------------------------------------------------------------|-------|
-| 0 | *(example — delete)* | *Nguyen Van A* | *Claude* | *Compare thread-per-client vs. NIO selector for our chat server* | *Comparison table + sample selector loop* | *Chose a fixed thread pool instead (easier to reason about locking); rewrote the accept loop; tested with 50 concurrent clients* | *`docs/architecture.md`, `server/src/Server.java`* |
-| 1 | | | | | | | |
-
----
-
-## Notable Interactions
-
-Describe **2–5 interactions that shaped the project** (a design decision, a hard bug, a rejected suggestion).
-These are likely oral-defense topics.
-
-### N1. *(Title)*
-
-- **Member / date / tool:**
-- **Prompt (key excerpt):**
-- **What the AI suggested:**
-- **What we decided and why:**
-- **What the AI got wrong or missed (if anything):**
+## Mục 3: Những trường hợp AI đưa ra kết quả sai và cách nhóm phát hiện
+- **Lỗi của AI:** Ban đầu, AI đề xuất sử dụng thư viện Java-WebSocket để nhanh chóng có kết quả. 
+- **Cách nhóm phát hiện:** Khi đối chiếu với rubric chấm điểm (tiêu chí A2 về Framing), nhóm nhận thấy WebSocket tự động xử lý framing, làm giảm giá trị thể hiện kỹ thuật lập trình mạng.
+- **Cách khắc phục:** Nhóm đã yêu cầu AI viết lại toàn bộ logic đọc/ghi stream bằng `DataInputStream` và `DataOutputStream` với cơ chế 4-byte length-prefix thủ công.
