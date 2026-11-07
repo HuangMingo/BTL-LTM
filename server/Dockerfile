@@ -1,20 +1,14 @@
-# Giai đoạn 1: Build bằng Maven
-FROM maven:3.9-eclipse-temurin-21-alpine AS build
-WORKDIR /app
+FROM maven:3.9.9-eclipse-temurin-21-alpine AS build
+WORKDIR /build
 COPY pom.xml .
-RUN mvn dependency:go-offline -B
-COPY src/ ./src/
-RUN mvn clean package -DskipTests
+RUN mvn -q -DskipTests dependency:go-offline
+COPY src ./src
+RUN mvn -q test package
 
-# Giai đoạn 2: Chạy bằng JRE nhẹ
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
-
-# Tạo user riêng để chạy server (bảo mật)
 RUN addgroup -S chat && adduser -S chat -G chat
-
-COPY --from=build /app/target/simplechat-server-1.0-SNAPSHOT.jar ./server.jar
+COPY --from=build /build/target/tcp-chat-server.jar /app/server.jar
 USER chat
-
 EXPOSE 5000
-CMD ["java", "-jar", "server.jar"]
+ENTRYPOINT ["java", "-jar", "/app/server.jar"]
