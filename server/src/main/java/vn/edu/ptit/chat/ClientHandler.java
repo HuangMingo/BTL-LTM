@@ -63,29 +63,70 @@ public final class ClientHandler implements Runnable {
     }
   }
 
-  private void dispatch(JsonNode r) throws IOException {
-    String type = text(r, "type"), id = text(r, "requestId");
-    JsonNode p = r.path("payload");
-    if (type == null || id == null || id.isBlank() || id.length() > 64 || !p.isObject()) {
-      invalid(id, "type, requestId and object payload are required");
-      return;
+  
+private void dispatch(JsonNode request) throws IOException {
+
+    String command = text(request, "type");
+    String requestId = text(request, "requestId");
+    JsonNode payload = request.path("payload");
+
+    boolean invalidRequest =
+            command == null
+            || requestId == null
+            || requestId.isBlank()
+            || requestId.length() > 64
+            || !payload.isObject();
+
+    if (invalidRequest) {
+        invalid(
+                requestId,
+                "type, requestId and object payload are required"
+        );
+        return;
     }
-    switch (type) {
-      case "HELLO" -> hello(id, p);
-      case "REGISTER" -> register(id, p);
-      case "LOGIN" -> login(id, p);
-      case "SEND_MESSAGE" -> message(id, p);
-      case "LIST_USERS" -> listUsers(id);
-      case "LIST_MESSAGES" -> listMessages(id, p);
-      case "LOGOUT" -> logout(id, "logout");
-      case "PING" -> send(response("PONG", id, 200, "Connection alive"));
-      case "QUIT" -> {
-        send(response("QUIT_ACK", id, 200, "Connection closed"));
-        cleanup("quit");
-      }
-      default -> invalid(id, "Unknown command: " + type);
+
+    switch (command) {
+
+        case "HELLO" -> hello(requestId, payload);
+
+        case "REGISTER" -> register(requestId, payload);
+
+        case "LOGIN" -> login(requestId, payload);
+
+        case "SEND_MESSAGE" -> message(requestId, payload);
+
+        case "LIST_USERS" -> listUsers(requestId);
+
+        case "LIST_MESSAGES" -> listMessages(requestId, payload);
+
+        case "LOGOUT" -> logout(requestId, "logout");
+
+        case "PING" -> {
+            send(response(
+                    "PONG",
+                    requestId,
+                    200,
+                    "Connection alive"
+            ));
+        }
+
+        case "QUIT" -> {
+            send(response(
+                    "QUIT_ACK",
+                    requestId,
+                    200,
+                    "Connection closed"
+            ));
+
+            cleanup("quit");
+        }
+
+        default -> {
+            invalid(requestId, "Unknown command: " + command);
+        }
     }
-  }
+}
+
 
   private void hello(String id, JsonNode p) throws IOException {
     if (state != State.CONNECTED) {
@@ -154,26 +195,65 @@ public final class ClientHandler implements Runnable {
     }
   }
 
-  private void message(String id, JsonNode p) throws IOException {
-    if (!require(State.AUTHENTICATED, id)) return;
-    String content = text(p, "content");
-    if (content != null) content = content.trim();
-    if (content == null
-        || content.isEmpty()
-        || content.codePointCount(0, content.length()) > 2000) {
-      send(response("SEND_MESSAGE_RESULT", id, 422, "Content must contain 1-2000 characters"));
-      return;
+  
+private void message(String requestId, JsonNode payload)
+        throws IOException {
+
+    if (!require(State.AUTHENTICATED, requestId)) {
+        return;
     }
+
+    String content = text(payload, "content");
+
+    if (content != null) {
+        content = content.trim();
+    }
+
+    boolean invalidContent =
+            content == null
+            || content.isEmpty()
+            || content.codePointCount(0, content.length()) > 2000;
+
+    if (invalidContent) {
+        send(response(
+                "SEND_MESSAGE_RESULT",
+                requestId,
+                422,
+                "Content must contain 1-2000 characters"
+        ));
+        return;
+    }
+
     try {
-      var saved = database.saveMessage(uid, email, content);
-      send(response("SEND_MESSAGE_RESULT", id, 200, "Message sent"));
-      ObjectNode event = Protocol.event("CHAT_MESSAGE");
-      event.set("payload", messageJson(saved));
-      sessions.broadcast(event, null);
-    } catch (SQLException e) {
-      serverError(id, "SEND_MESSAGE_RESULT", e);
+        var savedMessage = database.saveMessage(
+                uid,
+                email,
+                content
+        );
+
+        ObjectNode result = response(
+                "SEND_MESSAGE_RESULT",
+                requestId,
+                200,
+                "Message sent"
+        );
+
+        send(result);
+
+        ObjectNode chatEvent = Protocol.event("CHAT_MESSAGE");
+        chatEvent.set("payload", messageJson(savedMessage));
+
+        sessions.broadcast(chatEvent, null);
+
+    } catch (SQLException exception) {
+        serverError(
+                requestId,
+                "SEND_MESSAGE_RESULT",
+                exception
+        );
     }
-  }
+}
+
 
   private void listUsers(String id) throws IOException {
     if (!require(State.AUTHENTICATED, id)) return;
